@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: 'gomod'
+    # Raise pull requests for version updates
+    # against the `develop` branch
+    target-branch: "develop"
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+  - package-ecosystem: 'github-actions'
+    # Raise pull requests for version updates
+    # against the `develop` branch
+    target-branch: "develop"
+    directory: '/'
+    schedule:
+      interval: 'weekly'

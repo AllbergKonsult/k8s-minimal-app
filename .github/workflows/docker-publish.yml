@@ -1,0 +1,106 @@
+name: Build and Publish Docker Image
+
+on:
+  push:
+    branches:
+      - "main"
+      - "develop"
+    # Publish semver tags as releases.
+    tags: [ 'v*.*.*' ]
+  pull_request:
+    branches:
+      - "main"
+  workflow_dispatch:
+    branches:
+      - "*"
+
+env:
+  # Use docker.io for Docker Hub if empty
+  REGISTRY: ghcr.io
+  # github.repository as <account>/<repo>
+  IMAGE_NAME: ${{ github.repository }}
+  # Combine to create the target image
+  KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
+
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # This is used to complete the identity challenge
+      # with sigstore/fulcio when running outside of PRs.
+      id-token: write
+
+    steps:
+      - name: Install golang
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Install ko-build
+        uses: ko-build/setup-ko@v0.6
+
+      # Install the cosign tool
+      # https://github.com/sigstore/cosign-installer
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.4.0
+        with:
+          cosign-release: 'v2.1.1'
+
+      - name: Extract branch name
+        shell: bash
+        run: |
+          FILTERED_BRANCH_NAME=`echo "${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" \
+          | sed -e 's/[^a-z0-9]/-/g'`
+          echo "branch=${FILTERED_BRANCH_NAME}" \
+          >> $GITHUB_OUTPUT
+        id: extract_branch
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # First line is pretty strange, but it converts everything in the variable
+      # to lowercase by using shell magic.
+      - name: Build and push image
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "KO_DOCKER_REPO=${KO_DOCKER_REPO,,}"
+          KO_DOCKER_REPO=${KO_DOCKER_REPO,,} \
+          ko build \
+            --bare \
+            --tags ${{ steps.extract_branch.outputs.branch }} \
+            --platform linux/amd64,linux/arm64 \
+            --image-refs /tmp/refs \
+            ./
+          echo "${KO_DOCKER_REPO,,}:${{ steps.extract_branch.outputs.branch }}" >> /tmp/refs
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign the images
+        run: |          
+          echo ""
+          echo "Sign the images"
+          cat /tmp/refs \
+            | xargs cosign sign --tlog-upload=false
+
+      # Line with KO_DOCKER_REPO is pretty strange, but it converts everything in the variable
+      # to lowercase by using shell magic.
+      - name: Verify the pushed tags
+        run: |
+          echo "GITHUB_REF=${GITHUB_REF}"
+          cosign verify \
+            --insecure-ignore-tlog=true \
+            --certificate-identity "https://github.com/AllbergKonsult/k8s-minimal-app/.github/workflows/docker-publish.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            ${KO_DOCKER_REPO,,}:${{ steps.extract_branch.outputs.branch }}
+        env:
+          COSIGN_EXPERIMENTAL: 1
